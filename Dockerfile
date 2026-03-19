@@ -1,14 +1,18 @@
-# Use Amazon Linux 2023 (has GLIBC 2.34)
 FROM amazonlinux:2023
 
-# Install Java
-RUN dnf install -y java-21-amazon-corretto-devel
+# Set locale
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
 
-# Install LibreOffice dependencies
+# Install dependencies
 RUN dnf install -y \
+    java-21-amazon-corretto-devel \
+    glibc-langpack-en \
     libXinerama \
     cups-libs \
     cairo \
+    openssl \
+    openssl-libs \
     wget \
     tar \
     gzip \
@@ -23,6 +27,10 @@ RUN cd /tmp \
     && ln -sf /opt/libreoffice25.8/program/soffice /usr/local/bin/libreoffice \
     && rm -rf /tmp/*
 
+# Verify installation
+RUN libreoffice --version
+
 COPY target/pdf-converter-s3-1.0.0.jar /app/app.jar
 WORKDIR /app
-CMD ["java", "-jar", "app.jar"]
+
+CMD ["java", "-Dfile.encoding=UTF-8", "-jar", "app.jar"]
