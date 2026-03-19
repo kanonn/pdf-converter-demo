@@ -3,18 +3,26 @@ FROM amazonlinux:2023
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-# Install dependencies
 RUN dnf install -y \
     java-21-amazon-corretto-devel \
     glibc-langpack-en \
     libXinerama \
     cups-libs \
     cairo \
+    # --- 以下是新增或确保必须有的 ---
+    nss \
+    libXrender \
+    libXext \
+    libSM \
+    libICE \
+    fontconfig \
+    # ----------------------------
     openssl \
     openssl-libs \
     tar \
     gzip \
-    google-noto-sans-cjk-fonts
+    google-noto-sans-cjk-fonts && \
+    dnf clean all
 
 # Copy pre-downloaded LibreOffice from build context
 COPY LibreOffice_25.8.5_Linux_x86-64_rpm.tar.gz /tmp/
