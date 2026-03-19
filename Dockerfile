@@ -9,20 +9,38 @@ RUN dnf install -y \
     libXinerama \
     cups-libs \
     cairo \
-    # --- 以下是新增或确保必须有的 ---
     nss \
+    # --- ---
     libXrender \
     libXext \
     libSM \
     libICE \
     fontconfig \
-    # ----------------------------
+    # --- ---
+    libX11 \
+    # ---  ---
+    libXau \
+    libXcomposite \
+    libXdamage \
+    libXfont2 \
+    libXi \
+    libXrandr \
+    libXt \
+    libxcb \
+    dbus \
+    at-spi2-atk \
+    atk \
+    gdk-pixbuf2 \
+    pango \
+    cairo-gobject \
+    xcb-util \
+    # -----------------------------------------------
     openssl \
     openssl-libs \
     tar \
     gzip \
     google-noto-sans-cjk-fonts && \
-    dnf clean all
+    dnf clean all  # 架构师提醒：这一层已经 1.28G 了，必须保持 clean，防止体积失控
 
 # Copy pre-downloaded LibreOffice from build context
 COPY LibreOffice_25.8.5_Linux_x86-64_rpm.tar.gz /tmp/
