@@ -189,22 +189,32 @@ public class FontReplacer {
             
             // Try to resolve the cell reference
             String cellValue = resolveCellReference(workbook, textLink);
+            System.out.println("        Resolved cell value: " + (cellValue == null ? "NULL" : "\"" + cellValue + "\""));
             
+            // Get existing text from shape
+            String existingText = null;
+            try {
+                existingText = shape.getText();
+            } catch (Exception e) {
+                System.out.println("        Could not get existing text: " + e.getMessage());
+            }
+            System.out.println("        Existing text: " + (existingText == null ? "NULL" : "\"" + existingText + "\""));
+            
+            // Set static text if we have a cell value
             if (cellValue != null && !cellValue.isEmpty()) {
-                // Get existing text from shape
-                String existingText = shape.getText();
-                System.out.println("        Existing text: \"" + (existingText != null ? existingText : "") + "\"");
-                System.out.println("        Cell value: \"" + cellValue + "\"");
-                
-                // Set the static text (this will add text to the shape)
-                // Clear existing and set new
-                shape.setText(cellValue);
-                System.out.println("        => Set static text from cell value");
-                stats.textLinksFixed++;
+                try {
+                    shape.setText(cellValue);
+                    System.out.println("        => Set static text SUCCESS");
+                    stats.textLinksFixed++;
+                } catch (Exception e) {
+                    System.out.println("        => Set static text FAILED: " + e.getMessage());
+                }
+            } else {
+                System.out.println("        => Skipped: no cell value to set");
             }
             
         } catch (Exception e) {
-            System.out.println("      Warning: fixTextLink error: " + e.getMessage());
+            System.out.println("      Warning: fixTextLink error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
     
@@ -212,6 +222,8 @@ public class FontReplacer {
      * Resolve a cell reference like "'Sheet1'!$A$1" to its value.
      */
     private static String resolveCellReference(XSSFWorkbook workbook, String textLink) {
+        System.out.println("        Resolving: " + textLink);
+        
         try {
             // Parse the textlink format: 'SheetName'!$A$1 or SheetName!$A$1 or just $A$1
             String sheetName = null;
@@ -229,23 +241,45 @@ public class FontReplacer {
             // Remove $ signs from cell reference
             cellRef = cellRef.replace("$", "");
             
+            System.out.println("          Sheet: " + (sheetName == null ? "(default)" : sheetName));
+            System.out.println("          Cell: " + cellRef);
+            
             // Get the sheet
             Sheet sheet;
             if (sheetName != null && !sheetName.isEmpty()) {
                 sheet = workbook.getSheet(sheetName);
+                if (sheet == null) {
+                    System.out.println("          ERROR: Sheet not found: " + sheetName);
+                    // List available sheets
+                    System.out.println("          Available sheets:");
+                    for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+                        System.out.println("            - " + workbook.getSheetName(i));
+                    }
+                    return null;
+                }
             } else {
                 sheet = workbook.getSheetAt(0);
             }
             
-            if (sheet == null) return null;
+            System.out.println("          Found sheet: " + sheet.getSheetName());
             
             // Parse cell reference (e.g., "A1" -> row 0, col 0)
             org.apache.poi.ss.util.CellReference ref = new org.apache.poi.ss.util.CellReference(cellRef);
+            System.out.println("          Row: " + ref.getRow() + ", Col: " + ref.getCol());
+            
             Row row = sheet.getRow(ref.getRow());
-            if (row == null) return null;
+            if (row == null) {
+                System.out.println("          ERROR: Row not found");
+                return null;
+            }
             
             Cell cell = row.getCell(ref.getCol());
-            if (cell == null) return null;
+            if (cell == null) {
+                System.out.println("          ERROR: Cell not found");
+                return null;
+            }
+            
+            System.out.println("          Cell type: " + cell.getCellType());
             
             // Get cell value as string
             switch (cell.getCellType()) {
@@ -262,10 +296,11 @@ public class FontReplacer {
                         return String.valueOf(cell.getNumericCellValue());
                     }
                 default:
+                    System.out.println("          ERROR: Unknown cell type");
                     return null;
             }
         } catch (Exception e) {
-            System.out.println("        Warning: Could not resolve cell reference: " + e.getMessage());
+            System.out.println("          ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
