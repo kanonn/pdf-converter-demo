@@ -176,7 +176,8 @@ public class FontReplacer {
                     if (fontFamily != null) {
                         String replacement = getReplacementFont(fontFamily);
                         if (replacement != null) {
-                            run.setFontFamily(replacement);
+                            // setFontFamily(String font, byte charset, byte pitchAndFamily, boolean isSymbol)
+                            run.setFontFamily(replacement, (byte)0, (byte)0, false);
                             stats.shapeTextsReplaced++;
                         }
                     }
