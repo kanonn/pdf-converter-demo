@@ -262,9 +262,17 @@ public class FontReplacer {
                         if (replacement != null) {
                             try {
                                 run.setFontFamily(replacement, (byte)0, (byte)0, false);
-                                stats.shapeTextsReplaced++;
-                                replacedCount++;
-                                logLine.append("=> OK: ").append(replacement);
+                                
+                                // Verify the change
+                                String afterFont = run.getFontFamily();
+                                if (replacement.equals(afterFont)) {
+                                    stats.shapeTextsReplaced++;
+                                    replacedCount++;
+                                    logLine.append("=> OK: ").append(replacement);
+                                } else {
+                                    logLine.append("=> SET BUT NOT SAVED: set=").append(replacement);
+                                    logLine.append(" actual=").append(afterFont);
+                                }
                             } catch (Exception setEx) {
                                 logLine.append("=> FAILED: ").append(setEx.getClass().getSimpleName());
                                 logLine.append(": ").append(setEx.getMessage());
