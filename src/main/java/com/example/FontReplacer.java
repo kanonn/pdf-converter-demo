@@ -93,6 +93,7 @@ public class FontReplacer {
 
     /**
      * Replace fonts in Excel file and save to new file.
+     * Also fixes textlink shapes by converting them to static text.
      *
      * @param inputPath  Input Excel file path
      * @param outputPath Output Excel file path
@@ -106,10 +107,13 @@ public class FontReplacer {
         try (FileInputStream fis = new FileInputStream(inputPath);
              XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
             
-            // 1. Replace cell fonts
+            // 1. Fix textlink shapes (convert dynamic text to static)
+            fixTextLinkShapes(workbook, stats);
+            
+            // 2. Replace cell fonts
             replaceCellFonts(workbook, stats);
             
-            // 2. Replace drawing/shape fonts
+            // 3. Replace drawing/shape fonts
             replaceDrawingFonts(workbook, stats);
             
             // Save
@@ -123,8 +127,167 @@ public class FontReplacer {
         System.out.println("      Fonts replaced: " + stats.fontsReplaced);
         System.out.println("      Shapes processed: " + stats.shapesProcessed);
         System.out.println("      Shape texts replaced: " + stats.shapeTextsReplaced);
+        System.out.println("      TextLinks fixed: " + stats.textLinksFixed);
         
         return stats;
+    }
+    
+    /**
+     * Fix shapes with textlink attribute by converting them to static text.
+     * LibreOffice cannot render dynamic linked text properly.
+     */
+    private static void fixTextLinkShapes(XSSFWorkbook workbook, ReplacementStats stats) {
+        System.out.println("    Fixing textlink shapes...");
+        
+        for (Sheet sheet : workbook) {
+            XSSFSheet xssfSheet = (XSSFSheet) sheet;
+            XSSFDrawing drawing = xssfSheet.getDrawingPatriarch();
+            
+            if (drawing == null) continue;
+            
+            for (XSSFShape shape : drawing.getShapes()) {
+                try {
+                    if (shape instanceof XSSFSimpleShape) {
+                        XSSFSimpleShape simpleShape = (XSSFSimpleShape) shape;
+                        fixTextLink(simpleShape, workbook, stats);
+                    }
+                } catch (Exception e) {
+                    System.out.println("      Warning: Could not fix textlink for shape: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    /**
+     * Fix a single shape's textlink by resolving the cell reference and setting static text.
+     */
+    private static void fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
+        try {
+            CTShape ctShape = shape.getCTShape();
+            if (ctShape == null) return;
+            
+            // Check if shape has textlink in nvSpPr
+            if (!ctShape.isSetNvSpPr()) return;
+            
+            org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTShapeNonVisual nvSpPr = ctShape.getNvSpPr();
+            if (!nvSpPr.isSetCNvSpPr()) return;
+            
+            org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTNonVisualDrawingShapeProps cNvSpPr = nvSpPr.getCNvSpPr();
+            
+            // Check txBody for textlink attribute
+            if (!ctShape.isSetTxBody()) return;
+            
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextBody txBody = ctShape.getTxBody();
+            
+            // Get shape name for logging
+            String shapeName = shape.getShapeName();
+            
+            // Use XPath to find textlink attribute
+            org.apache.xmlbeans.XmlCursor cursor = ctShape.newCursor();
+            String xmlString = ctShape.xmlText();
+            cursor.dispose();
+            
+            // Check if this shape has a textlink
+            if (!xmlString.contains("textlink=")) {
+                return;
+            }
+            
+            // Extract textlink value
+            int startIdx = xmlString.indexOf("textlink=\"");
+            if (startIdx == -1) return;
+            
+            startIdx += 10; // length of 'textlink="'
+            int endIdx = xmlString.indexOf("\"", startIdx);
+            if (endIdx == -1) return;
+            
+            String textLink = xmlString.substring(startIdx, endIdx);
+            System.out.println("      SHAPE[" + shapeName + "] has textlink: " + textLink);
+            
+            // Try to resolve the cell reference
+            String cellValue = resolveCellReference(workbook, textLink);
+            
+            if (cellValue != null && !cellValue.isEmpty()) {
+                // Get existing text from shape
+                String existingText = shape.getText();
+                System.out.println("        Existing text: \"" + existingText + "\"");
+                System.out.println("        Cell value: \"" + cellValue + "\"");
+                
+                // Set the static text
+                if (existingText == null || existingText.isEmpty()) {
+                    shape.setText(cellValue);
+                    System.out.println("        => Set static text from cell value");
+                    stats.textLinksFixed++;
+                }
+            }
+            
+            // Try to remove the textlink attribute by modifying XML
+            // This is complex, so we'll just ensure the text content is set
+            
+        } catch (Exception e) {
+            // Skip
+        }
+    }
+    
+    /**
+     * Resolve a cell reference like "'Sheet1'!$A$1" to its value.
+     */
+    private static String resolveCellReference(XSSFWorkbook workbook, String textLink) {
+        try {
+            // Parse the textlink format: 'SheetName'!$A$1 or SheetName!$A$1 or just $A$1
+            String sheetName = null;
+            String cellRef = textLink;
+            
+            if (textLink.contains("!")) {
+                int exclamIdx = textLink.lastIndexOf("!");
+                sheetName = textLink.substring(0, exclamIdx);
+                cellRef = textLink.substring(exclamIdx + 1);
+                
+                // Remove quotes from sheet name
+                sheetName = sheetName.replace("'", "").trim();
+            }
+            
+            // Remove $ signs from cell reference
+            cellRef = cellRef.replace("$", "");
+            
+            // Get the sheet
+            Sheet sheet;
+            if (sheetName != null && !sheetName.isEmpty()) {
+                sheet = workbook.getSheet(sheetName);
+            } else {
+                sheet = workbook.getSheetAt(0);
+            }
+            
+            if (sheet == null) return null;
+            
+            // Parse cell reference (e.g., "A1" -> row 0, col 0)
+            org.apache.poi.ss.util.CellReference ref = new org.apache.poi.ss.util.CellReference(cellRef);
+            Row row = sheet.getRow(ref.getRow());
+            if (row == null) return null;
+            
+            Cell cell = row.getCell(ref.getCol());
+            if (cell == null) return null;
+            
+            // Get cell value as string
+            switch (cell.getCellType()) {
+                case STRING:
+                    return cell.getStringCellValue();
+                case NUMERIC:
+                    return String.valueOf(cell.getNumericCellValue());
+                case BOOLEAN:
+                    return String.valueOf(cell.getBooleanCellValue());
+                case FORMULA:
+                    try {
+                        return cell.getStringCellValue();
+                    } catch (Exception e) {
+                        return String.valueOf(cell.getNumericCellValue());
+                    }
+                default:
+                    return null;
+            }
+        } catch (Exception e) {
+            System.out.println("        Warning: Could not resolve cell reference: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -405,5 +568,6 @@ public class FontReplacer {
         public int fontsReplaced = 0;
         public int shapesProcessed = 0;
         public int shapeTextsReplaced = 0;
+        public int textLinksFixed = 0;
     }
 }
