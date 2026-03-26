@@ -243,6 +243,10 @@ public class PdfConverterMain {
 
         // Step 3: Convert to PDF using LibreOffice
         System.out.println("  Converting to PDF...");
+        System.out.println("    Input file: " + excelToConvert);
+        File inputFile = new File(excelToConvert);
+        System.out.println("    File exists: " + inputFile.exists());
+        System.out.println("    File size: " + inputFile.length() + " bytes");
         LibreOfficeConverter.convertToPdf(excelToConvert, OUTPUT_DIR);
 
         // Rename output file

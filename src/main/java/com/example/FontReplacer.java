@@ -304,7 +304,7 @@ public class FontReplacer {
         int count = 0;
         String textPreview = text != null ? text.substring(0, Math.min(text.length(), 15)) : "";
         
-        // Latin font (a:latin)
+        // Latin font (a:latin) - replace with Noto Sans CJK JP
         if (rPr.isSetLatin()) {
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont latin = rPr.getLatin();
             String fontName = latin.getTypeface();
@@ -317,29 +317,31 @@ public class FontReplacer {
             }
         }
         
-        // East Asian font (a:ea)
+        // East Asian font (a:ea) - REMOVE it instead of replacing
+        // LibreOffice seems to have issues when both a:latin and a:ea are present
         if (rPr.isSetEa()) {
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont ea = rPr.getEa();
             String fontName = ea.getTypeface();
             String replacement = getReplacementFont(fontName);
             if (replacement != null) {
-                ea.setTypeface(replacement);
+                // Remove a:ea and let a:latin handle all text
+                rPr.unsetEa();
                 count++;
                 stats.shapeTextsReplaced++;
-                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" ea=\"" + fontName + "\" => " + replacement);
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" ea=\"" + fontName + "\" => REMOVED (let latin handle)");
             }
         }
         
-        // Complex script font (a:cs)
+        // Complex script font (a:cs) - also remove
         if (rPr.isSetCs()) {
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont cs = rPr.getCs();
             String fontName = cs.getTypeface();
             String replacement = getReplacementFont(fontName);
             if (replacement != null) {
-                cs.setTypeface(replacement);
+                rPr.unsetCs();
                 count++;
                 stats.shapeTextsReplaced++;
-                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" cs=\"" + fontName + "\" => " + replacement);
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" cs=\"" + fontName + "\" => REMOVED");
             }
         }
         
