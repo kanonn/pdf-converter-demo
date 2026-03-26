@@ -200,20 +200,23 @@ public class FontReplacer {
             
             cursor.dispose();
             
-            // Also check nvSpPr/cNvPr for macro attribute
-            if (ctShape.isSetNvSpPr()) {
-                org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTShapeNonVisual nvSpPr = ctShape.getNvSpPr();
-                if (nvSpPr.isSetCNvPr()) {
-                    org.openxmlformats.schemas.drawingml.x2006.main.CTNonVisualDrawingProps cNvPr = nvSpPr.getCNvPr();
-                    
-                    // Remove macro from cNvPr using cursor
-                    org.apache.xmlbeans.XmlCursor cNvPrCursor = cNvPr.newCursor();
-                    if (cNvPrCursor.removeAttribute(new javax.xml.namespace.QName("macro"))) {
-                        System.out.println("        => Removed macro from cNvPr element");
-                        stats.textLinksFixed++;
+            // Try to remove macro from nested elements using XPath
+            try {
+                org.apache.xmlbeans.XmlObject[] cNvPrArr = ctShape.selectPath(
+                    "declare namespace xdr='http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing' .//xdr:cNvPr");
+                
+                if (cNvPrArr != null) {
+                    for (org.apache.xmlbeans.XmlObject cNvPrObj : cNvPrArr) {
+                        org.apache.xmlbeans.XmlCursor c = cNvPrObj.newCursor();
+                        if (c.removeAttribute(new javax.xml.namespace.QName("macro"))) {
+                            System.out.println("        => Removed macro from cNvPr element");
+                            stats.textLinksFixed++;
+                        }
+                        c.dispose();
                     }
-                    cNvPrCursor.dispose();
                 }
+            } catch (Exception e) {
+                // XPath failed, try alternative
             }
             
             // Check if attributes are still present
