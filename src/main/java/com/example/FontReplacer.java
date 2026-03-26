@@ -159,8 +159,8 @@ public class FontReplacer {
     }
     
     /**
-     * Fix a single shape's textlink and macro by removing these attributes.
-     * LibreOffice cannot render shapes with textlink/macro attributes properly.
+     * Fix a single shape by removing problematic attributes and extensions.
+     * LibreOffice cannot render shapes with textlink/macro/extLst properly.
      */
     private static void fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
         try {
@@ -172,12 +172,13 @@ public class FontReplacer {
             
             boolean hasTextlink = xmlBefore.contains("textlink=");
             boolean hasMacro = xmlBefore.contains("macro=");
+            boolean hasExtLst = xmlBefore.contains("<a:extLst") || xmlBefore.contains("a16:creationId");
             
-            if (!hasTextlink && !hasMacro) {
+            if (!hasTextlink && !hasMacro && !hasExtLst) {
                 return;
             }
             
-            System.out.println("      SHAPE[" + shapeName + "] has textlink=" + hasTextlink + ", macro=" + hasMacro);
+            System.out.println("      SHAPE[" + shapeName + "] has textlink=" + hasTextlink + ", macro=" + hasMacro + ", extLst=" + hasExtLst);
             
             // Try to remove attributes using XmlCursor on the shape itself
             org.apache.xmlbeans.XmlCursor cursor = ctShape.newCursor();
@@ -200,29 +201,57 @@ public class FontReplacer {
             
             cursor.dispose();
             
-            // Try to remove macro from nested elements using XPath
-            try {
-                org.apache.xmlbeans.XmlObject[] cNvPrArr = ctShape.selectPath(
-                    "declare namespace xdr='http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing' .//xdr:cNvPr");
-                
-                if (cNvPrArr != null) {
-                    for (org.apache.xmlbeans.XmlObject cNvPrObj : cNvPrArr) {
-                        org.apache.xmlbeans.XmlCursor c = cNvPrObj.newCursor();
-                        if (c.removeAttribute(new javax.xml.namespace.QName("macro"))) {
-                            System.out.println("        => Removed macro from cNvPr element");
+            // Remove extLst elements using XPath
+            if (hasExtLst) {
+                try {
+                    // Find and remove all extLst elements
+                    org.apache.xmlbeans.XmlObject[] extLstArr = ctShape.selectPath(
+                        "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:extLst");
+                    
+                    if (extLstArr != null && extLstArr.length > 0) {
+                        for (org.apache.xmlbeans.XmlObject extLst : extLstArr) {
+                            org.apache.xmlbeans.XmlCursor c = extLst.newCursor();
+                            c.removeXml();
+                            c.dispose();
+                            System.out.println("        => Removed a:extLst element");
                             stats.textLinksFixed++;
                         }
-                        c.dispose();
                     }
+                } catch (Exception e) {
+                    System.out.println("        => Failed to remove extLst: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                // XPath failed, try alternative
+            }
+            
+            // Try to remove macro from nested cNvPr elements using XPath
+            if (hasMacro) {
+                try {
+                    org.apache.xmlbeans.XmlObject[] cNvPrArr = ctShape.selectPath(
+                        "declare namespace xdr='http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing' .//xdr:cNvPr");
+                    
+                    if (cNvPrArr != null) {
+                        for (org.apache.xmlbeans.XmlObject cNvPrObj : cNvPrArr) {
+                            org.apache.xmlbeans.XmlCursor c = cNvPrObj.newCursor();
+                            if (c.removeAttribute(new javax.xml.namespace.QName("macro"))) {
+                                System.out.println("        => Removed macro from cNvPr element");
+                                stats.textLinksFixed++;
+                            }
+                            c.dispose();
+                        }
+                    }
+                } catch (Exception e) {
+                    // XPath failed
+                }
             }
             
             // Check if attributes are still present
             String xmlAfter = ctShape.xmlText();
-            if (xmlAfter.contains("textlink=") || xmlAfter.contains("macro=")) {
-                System.out.println("        => Attributes still present, trying clearText/setText");
+            boolean stillHasProblems = xmlAfter.contains("textlink=") || 
+                                       xmlAfter.contains("macro=") || 
+                                       xmlAfter.contains("<a:extLst") ||
+                                       xmlAfter.contains("a16:creationId");
+            
+            if (stillHasProblems) {
+                System.out.println("        => Some attributes still present, trying clearText/setText");
                 
                 // Get existing text and re-set it
                 String existingText = null;
@@ -243,7 +272,7 @@ public class FontReplacer {
                     }
                 }
             } else {
-                System.out.println("        => Attributes removed successfully");
+                System.out.println("        => All problematic attributes removed successfully");
             }
             
         } catch (Exception e) {
@@ -421,6 +450,7 @@ public class FontReplacer {
     
     /**
      * Replace fonts in character properties (low-level XML).
+     * Ensures both a:latin and a:ea are set for proper CJK rendering.
      */
     private static int replaceCharacterFonts(String shapeName, String text, 
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextCharacterProperties rPr,
@@ -428,7 +458,9 @@ public class FontReplacer {
         int count = 0;
         String textPreview = text != null ? text.substring(0, Math.min(text.length(), 15)) : "";
         
-        // Latin font (a:latin) - replace with Noto Sans CJK JP
+        String targetFont = "Noto Sans CJK JP";
+        
+        // Latin font (a:latin) - replace or add
         if (rPr.isSetLatin()) {
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont latin = rPr.getLatin();
             String fontName = latin.getTypeface();
@@ -439,33 +471,45 @@ public class FontReplacer {
                 stats.shapeTextsReplaced++;
                 System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" latin=\"" + fontName + "\" => " + replacement);
             }
+        } else {
+            // Add a:latin if missing
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont latin = rPr.addNewLatin();
+            latin.setTypeface(targetFont);
+            count++;
+            stats.shapeTextsReplaced++;
+            System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" => ADDED latin: " + targetFont);
         }
         
-        // East Asian font (a:ea) - REMOVE it instead of replacing
-        // LibreOffice seems to have issues when both a:latin and a:ea are present
+        // East Asian font (a:ea) - replace or add (CRITICAL for Japanese text!)
         if (rPr.isSetEa()) {
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont ea = rPr.getEa();
             String fontName = ea.getTypeface();
             String replacement = getReplacementFont(fontName);
             if (replacement != null) {
-                // Remove a:ea and let a:latin handle all text
-                rPr.unsetEa();
+                ea.setTypeface(replacement);
                 count++;
                 stats.shapeTextsReplaced++;
-                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" ea=\"" + fontName + "\" => REMOVED (let latin handle)");
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" ea=\"" + fontName + "\" => " + replacement);
             }
+        } else {
+            // Add a:ea if missing - CRITICAL for Japanese text rendering!
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont ea = rPr.addNewEa();
+            ea.setTypeface(targetFont);
+            count++;
+            stats.shapeTextsReplaced++;
+            System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" => ADDED ea: " + targetFont);
         }
         
-        // Complex script font (a:cs) - also remove
+        // Complex script font (a:cs) - replace if exists
         if (rPr.isSetCs()) {
             org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont cs = rPr.getCs();
             String fontName = cs.getTypeface();
             String replacement = getReplacementFont(fontName);
             if (replacement != null) {
-                rPr.unsetCs();
+                cs.setTypeface(replacement);
                 count++;
                 stats.shapeTextsReplaced++;
-                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" cs=\"" + fontName + "\" => REMOVED");
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" cs=\"" + fontName + "\" => " + replacement);
             }
         }
         
