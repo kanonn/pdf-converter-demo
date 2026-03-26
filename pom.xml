@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>PDF Converter with S3</name>
-    <description>Convert Excel/Word/TIFF to PDF using LibreOffice and PDFBox with S3 integration</description>
+    <description>Convert Excel/Word/TIFF to PDF with font replacement and S3 integration</description>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
@@ -22,17 +22,24 @@
     </properties>
 
     <dependencies>
-        <!-- Apache PDFBox - PDF operations -->
+        <!-- Apache PDFBox -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
             <version>${pdfbox.version}</version>
         </dependency>
 
-        <!-- Apache POI - Excel operations (for sheet extraction) -->
+        <!-- Apache POI - Excel -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
+            <version>${poi.version}</version>
+        </dependency>
+
+        <!-- POI OOXML Schemas (full version for shape/drawing manipulation) -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml-full</artifactId>
             <version>${poi.version}</version>
         </dependency>
 
@@ -80,7 +87,6 @@
                 </configuration>
             </plugin>
 
-            <!-- Create executable JAR -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
