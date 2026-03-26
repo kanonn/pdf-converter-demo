@@ -166,28 +166,12 @@ public class FontReplacer {
             CTShape ctShape = shape.getCTShape();
             if (ctShape == null) return;
             
-            // Check if shape has textlink in nvSpPr
-            if (!ctShape.isSetNvSpPr()) return;
-            
-            org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTShapeNonVisual nvSpPr = ctShape.getNvSpPr();
-            if (!nvSpPr.isSetCNvSpPr()) return;
-            
-            org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTNonVisualDrawingShapeProps cNvSpPr = nvSpPr.getCNvSpPr();
-            
-            // Check txBody for textlink attribute
-            if (!ctShape.isSetTxBody()) return;
-            
-            org.openxmlformats.schemas.drawingml.x2006.main.CTTextBody txBody = ctShape.getTxBody();
-            
             // Get shape name for logging
             String shapeName = shape.getShapeName();
             
-            // Use XPath to find textlink attribute
-            org.apache.xmlbeans.XmlCursor cursor = ctShape.newCursor();
+            // Check if this shape has a textlink by examining XML
             String xmlString = ctShape.xmlText();
-            cursor.dispose();
             
-            // Check if this shape has a textlink
             if (!xmlString.contains("textlink=")) {
                 return;
             }
@@ -209,22 +193,18 @@ public class FontReplacer {
             if (cellValue != null && !cellValue.isEmpty()) {
                 // Get existing text from shape
                 String existingText = shape.getText();
-                System.out.println("        Existing text: \"" + existingText + "\"");
+                System.out.println("        Existing text: \"" + (existingText != null ? existingText : "") + "\"");
                 System.out.println("        Cell value: \"" + cellValue + "\"");
                 
-                // Set the static text
-                if (existingText == null || existingText.isEmpty()) {
-                    shape.setText(cellValue);
-                    System.out.println("        => Set static text from cell value");
-                    stats.textLinksFixed++;
-                }
+                // Set the static text (this will add text to the shape)
+                // Clear existing and set new
+                shape.setText(cellValue);
+                System.out.println("        => Set static text from cell value");
+                stats.textLinksFixed++;
             }
             
-            // Try to remove the textlink attribute by modifying XML
-            // This is complex, so we'll just ensure the text content is set
-            
         } catch (Exception e) {
-            // Skip
+            System.out.println("      Warning: fixTextLink error: " + e.getMessage());
         }
     }
     
