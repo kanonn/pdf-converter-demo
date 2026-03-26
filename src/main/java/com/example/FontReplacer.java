@@ -159,8 +159,8 @@ public class FontReplacer {
     }
     
     /**
-     * Fix a single shape's textlink by removing the textlink attribute.
-     * LibreOffice cannot render shapes with textlink attribute properly.
+     * Fix a single shape's textlink and macro by removing these attributes.
+     * LibreOffice cannot render shapes with textlink/macro attributes properly.
      */
     private static void fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
         try {
@@ -168,49 +168,60 @@ public class FontReplacer {
             if (ctShape == null) return;
             
             String shapeName = shape.getShapeName();
+            String xmlBefore = ctShape.xmlText();
             
-            // Check if txBody exists and has textlink attribute
-            if (!ctShape.isSetTxBody()) return;
+            boolean hasTextlink = xmlBefore.contains("textlink=");
+            boolean hasMacro = xmlBefore.contains("macro=");
             
-            org.openxmlformats.schemas.drawingml.x2006.main.CTTextBody txBody = ctShape.getTxBody();
-            
-            // Check for textlink attribute using XmlCursor
-            org.apache.xmlbeans.XmlCursor cursor = txBody.newCursor();
-            
-            // Move to the txBody element
-            if (cursor.toFirstChild()) {
-                do {
-                    // Check each child element for textlink attribute
-                    String textlink = cursor.getAttributeText(new javax.xml.namespace.QName("textlink"));
-                    if (textlink != null) {
-                        System.out.println("      SHAPE[" + shapeName + "] removing textlink from child element");
-                        cursor.removeAttribute(new javax.xml.namespace.QName("textlink"));
-                        stats.textLinksFixed++;
-                    }
-                } while (cursor.toNextSibling());
+            if (!hasTextlink && !hasMacro) {
+                return;
             }
+            
+            System.out.println("      SHAPE[" + shapeName + "] has textlink=" + hasTextlink + ", macro=" + hasMacro);
+            
+            // Try to remove attributes using XmlCursor on the shape itself
+            org.apache.xmlbeans.XmlCursor cursor = ctShape.newCursor();
+            
+            // Remove textlink attribute
+            if (hasTextlink) {
+                if (cursor.removeAttribute(new javax.xml.namespace.QName("textlink"))) {
+                    System.out.println("        => Removed textlink from sp element");
+                    stats.textLinksFixed++;
+                }
+            }
+            
+            // Remove macro attribute
+            if (hasMacro) {
+                if (cursor.removeAttribute(new javax.xml.namespace.QName("macro"))) {
+                    System.out.println("        => Removed macro from sp element");
+                    stats.textLinksFixed++;
+                }
+            }
+            
             cursor.dispose();
             
-            // Also check the parent sp element for textlink
-            org.apache.xmlbeans.XmlCursor spCursor = ctShape.newCursor();
-            String spTextlink = spCursor.getAttributeText(new javax.xml.namespace.QName("textlink"));
-            if (spTextlink != null) {
-                System.out.println("      SHAPE[" + shapeName + "] has textlink=\"" + spTextlink + "\" - REMOVING");
-                spCursor.removeAttribute(new javax.xml.namespace.QName("textlink"));
-                stats.textLinksFixed++;
+            // Also check nvSpPr/cNvPr for macro attribute
+            if (ctShape.isSetNvSpPr()) {
+                org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTShapeNonVisual nvSpPr = ctShape.getNvSpPr();
+                if (nvSpPr.isSetCNvPr()) {
+                    org.openxmlformats.schemas.drawingml.x2006.main.CTNonVisualDrawingProps cNvPr = nvSpPr.getCNvPr();
+                    
+                    // Remove macro from cNvPr using cursor
+                    org.apache.xmlbeans.XmlCursor cNvPrCursor = cNvPr.newCursor();
+                    if (cNvPrCursor.removeAttribute(new javax.xml.namespace.QName("macro"))) {
+                        System.out.println("        => Removed macro from cNvPr element");
+                        stats.textLinksFixed++;
+                    }
+                    cNvPrCursor.dispose();
+                }
             }
-            spCursor.dispose();
             
-            // Check in nvSpPr/cNvSpPr for txBox with textlink
-            // The textlink might be on the sp element itself
-            String xmlBefore = ctShape.xmlText();
-            if (xmlBefore.contains("textlink=")) {
-                System.out.println("      SHAPE[" + shapeName + "] still has textlink in XML, trying to remove via regex");
+            // Check if attributes are still present
+            String xmlAfter = ctShape.xmlText();
+            if (xmlAfter.contains("textlink=") || xmlAfter.contains("macro=")) {
+                System.out.println("        => Attributes still present, trying clearText/setText");
                 
-                // We need to modify the XML directly
-                // Unfortunately POI doesn't have a clean way to do this
-                // Let's try to get the existing text and ensure it's set properly
-                
+                // Get existing text and re-set it
                 String existingText = null;
                 try {
                     existingText = shape.getText();
@@ -219,21 +230,17 @@ public class FontReplacer {
                 }
                 
                 if (existingText != null && !existingText.trim().isEmpty()) {
-                    System.out.println("      SHAPE[" + shapeName + "] has existing text: \"" + existingText + "\"");
-                    // Re-set the text to ensure it's properly embedded
-                    // This might help override the textlink behavior
+                    System.out.println("        => Existing text: \"" + existingText.substring(0, Math.min(existingText.length(), 30)) + "\"");
                     try {
-                        // Clear and re-add the text
                         shape.clearText();
                         shape.setText(existingText);
-                        System.out.println("      SHAPE[" + shapeName + "] => Re-set text to ensure it's static");
-                        stats.textLinksFixed++;
+                        System.out.println("        => Re-set text SUCCESS");
                     } catch (Exception e) {
-                        System.out.println("      SHAPE[" + shapeName + "] => Failed to re-set text: " + e.getMessage());
+                        System.out.println("        => Re-set text FAILED: " + e.getMessage());
                     }
-                } else {
-                    System.out.println("      SHAPE[" + shapeName + "] has no existing text, cannot fix");
                 }
+            } else {
+                System.out.println("        => Attributes removed successfully");
             }
             
         } catch (Exception e) {
