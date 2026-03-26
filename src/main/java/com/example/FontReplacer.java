@@ -159,149 +159,85 @@ public class FontReplacer {
     }
     
     /**
-     * Fix a single shape's textlink by resolving the cell reference and setting static text.
+     * Fix a single shape's textlink by removing the textlink attribute.
+     * LibreOffice cannot render shapes with textlink attribute properly.
      */
     private static void fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
         try {
             CTShape ctShape = shape.getCTShape();
             if (ctShape == null) return;
             
-            // Get shape name for logging
             String shapeName = shape.getShapeName();
             
-            // Check if this shape has a textlink by examining XML
-            String xmlString = ctShape.xmlText();
+            // Check if txBody exists and has textlink attribute
+            if (!ctShape.isSetTxBody()) return;
             
-            if (!xmlString.contains("textlink=")) {
-                return;
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextBody txBody = ctShape.getTxBody();
+            
+            // Check for textlink attribute using XmlCursor
+            org.apache.xmlbeans.XmlCursor cursor = txBody.newCursor();
+            
+            // Move to the txBody element
+            if (cursor.toFirstChild()) {
+                do {
+                    // Check each child element for textlink attribute
+                    String textlink = cursor.getAttributeText(new javax.xml.namespace.QName("textlink"));
+                    if (textlink != null) {
+                        System.out.println("      SHAPE[" + shapeName + "] removing textlink from child element");
+                        cursor.removeAttribute(new javax.xml.namespace.QName("textlink"));
+                        stats.textLinksFixed++;
+                    }
+                } while (cursor.toNextSibling());
             }
+            cursor.dispose();
             
-            // Extract textlink value
-            int startIdx = xmlString.indexOf("textlink=\"");
-            if (startIdx == -1) return;
-            
-            startIdx += 10; // length of 'textlink="'
-            int endIdx = xmlString.indexOf("\"", startIdx);
-            if (endIdx == -1) return;
-            
-            String textLink = xmlString.substring(startIdx, endIdx);
-            System.out.println("      SHAPE[" + shapeName + "] has textlink: " + textLink);
-            
-            // Try to resolve the cell reference
-            String cellValue = resolveCellReference(workbook, textLink);
-            System.out.println("        Resolved cell value: " + (cellValue == null ? "NULL" : "\"" + cellValue + "\""));
-            
-            // Get existing text from shape
-            String existingText = null;
-            try {
-                existingText = shape.getText();
-            } catch (Exception e) {
-                System.out.println("        Could not get existing text: " + e.getMessage());
+            // Also check the parent sp element for textlink
+            org.apache.xmlbeans.XmlCursor spCursor = ctShape.newCursor();
+            String spTextlink = spCursor.getAttributeText(new javax.xml.namespace.QName("textlink"));
+            if (spTextlink != null) {
+                System.out.println("      SHAPE[" + shapeName + "] has textlink=\"" + spTextlink + "\" - REMOVING");
+                spCursor.removeAttribute(new javax.xml.namespace.QName("textlink"));
+                stats.textLinksFixed++;
             }
-            System.out.println("        Existing text: " + (existingText == null ? "NULL" : "\"" + existingText + "\""));
+            spCursor.dispose();
             
-            // Set static text if we have a cell value
-            if (cellValue != null && !cellValue.isEmpty()) {
+            // Check in nvSpPr/cNvSpPr for txBox with textlink
+            // The textlink might be on the sp element itself
+            String xmlBefore = ctShape.xmlText();
+            if (xmlBefore.contains("textlink=")) {
+                System.out.println("      SHAPE[" + shapeName + "] still has textlink in XML, trying to remove via regex");
+                
+                // We need to modify the XML directly
+                // Unfortunately POI doesn't have a clean way to do this
+                // Let's try to get the existing text and ensure it's set properly
+                
+                String existingText = null;
                 try {
-                    shape.setText(cellValue);
-                    System.out.println("        => Set static text SUCCESS");
-                    stats.textLinksFixed++;
+                    existingText = shape.getText();
                 } catch (Exception e) {
-                    System.out.println("        => Set static text FAILED: " + e.getMessage());
+                    // ignore
                 }
-            } else {
-                System.out.println("        => Skipped: no cell value to set");
+                
+                if (existingText != null && !existingText.trim().isEmpty()) {
+                    System.out.println("      SHAPE[" + shapeName + "] has existing text: \"" + existingText + "\"");
+                    // Re-set the text to ensure it's properly embedded
+                    // This might help override the textlink behavior
+                    try {
+                        // Clear and re-add the text
+                        shape.clearText();
+                        shape.setText(existingText);
+                        System.out.println("      SHAPE[" + shapeName + "] => Re-set text to ensure it's static");
+                        stats.textLinksFixed++;
+                    } catch (Exception e) {
+                        System.out.println("      SHAPE[" + shapeName + "] => Failed to re-set text: " + e.getMessage());
+                    }
+                } else {
+                    System.out.println("      SHAPE[" + shapeName + "] has no existing text, cannot fix");
+                }
             }
             
         } catch (Exception e) {
             System.out.println("      Warning: fixTextLink error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Resolve a cell reference like "'Sheet1'!$A$1" to its value.
-     */
-    private static String resolveCellReference(XSSFWorkbook workbook, String textLink) {
-        System.out.println("        Resolving: " + textLink);
-        
-        try {
-            // Parse the textlink format: 'SheetName'!$A$1 or SheetName!$A$1 or just $A$1
-            String sheetName = null;
-            String cellRef = textLink;
-            
-            if (textLink.contains("!")) {
-                int exclamIdx = textLink.lastIndexOf("!");
-                sheetName = textLink.substring(0, exclamIdx);
-                cellRef = textLink.substring(exclamIdx + 1);
-                
-                // Remove quotes from sheet name
-                sheetName = sheetName.replace("'", "").trim();
-            }
-            
-            // Remove $ signs from cell reference
-            cellRef = cellRef.replace("$", "");
-            
-            System.out.println("          Sheet: " + (sheetName == null ? "(default)" : sheetName));
-            System.out.println("          Cell: " + cellRef);
-            
-            // Get the sheet
-            Sheet sheet;
-            if (sheetName != null && !sheetName.isEmpty()) {
-                sheet = workbook.getSheet(sheetName);
-                if (sheet == null) {
-                    System.out.println("          ERROR: Sheet not found: " + sheetName);
-                    // List available sheets
-                    System.out.println("          Available sheets:");
-                    for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
-                        System.out.println("            - " + workbook.getSheetName(i));
-                    }
-                    return null;
-                }
-            } else {
-                sheet = workbook.getSheetAt(0);
-            }
-            
-            System.out.println("          Found sheet: " + sheet.getSheetName());
-            
-            // Parse cell reference (e.g., "A1" -> row 0, col 0)
-            org.apache.poi.ss.util.CellReference ref = new org.apache.poi.ss.util.CellReference(cellRef);
-            System.out.println("          Row: " + ref.getRow() + ", Col: " + ref.getCol());
-            
-            Row row = sheet.getRow(ref.getRow());
-            if (row == null) {
-                System.out.println("          ERROR: Row not found");
-                return null;
-            }
-            
-            Cell cell = row.getCell(ref.getCol());
-            if (cell == null) {
-                System.out.println("          ERROR: Cell not found");
-                return null;
-            }
-            
-            System.out.println("          Cell type: " + cell.getCellType());
-            
-            // Get cell value as string
-            switch (cell.getCellType()) {
-                case STRING:
-                    return cell.getStringCellValue();
-                case NUMERIC:
-                    return String.valueOf(cell.getNumericCellValue());
-                case BOOLEAN:
-                    return String.valueOf(cell.getBooleanCellValue());
-                case FORMULA:
-                    try {
-                        return cell.getStringCellValue();
-                    } catch (Exception e) {
-                        return String.valueOf(cell.getNumericCellValue());
-                    }
-                default:
-                    System.out.println("          ERROR: Unknown cell type");
-                    return null;
-            }
-        } catch (Exception e) {
-            System.out.println("          ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            return null;
         }
     }
 
