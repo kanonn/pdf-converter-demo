@@ -19,46 +19,76 @@ public class FontReplacer {
     private static final Map<String, String> FONT_MAP = new HashMap<>();
     
     static {
-        // Gothic family
+        // Gothic family - English names
         FONT_MAP.put("MS Gothic", "Noto Sans CJK JP");
         FONT_MAP.put("MS PGothic", "Noto Sans CJK JP");
         FONT_MAP.put("MS UI Gothic", "Noto Sans CJK JP");
+        
+        // Gothic family - Japanese names (全角)
         FONT_MAP.put("ＭＳ ゴシック", "Noto Sans CJK JP");
         FONT_MAP.put("ＭＳ Ｐゴシック", "Noto Sans CJK JP");
         
-        // Mincho family
+        // Gothic family - Mixed (半角MS + 全角ゴシック) ← これが重要！
+        FONT_MAP.put("MS ゴシック", "Noto Sans CJK JP");
+        FONT_MAP.put("MS Pゴシック", "Noto Sans CJK JP");
+        FONT_MAP.put("MS UIゴシック", "Noto Sans CJK JP");
+        
+        // Mincho family - English names
         FONT_MAP.put("MS Mincho", "Noto Sans CJK JP");
         FONT_MAP.put("MS PMincho", "Noto Sans CJK JP");
+        
+        // Mincho family - Japanese names (全角)
         FONT_MAP.put("ＭＳ 明朝", "Noto Sans CJK JP");
         FONT_MAP.put("ＭＳ Ｐ明朝", "Noto Sans CJK JP");
         
-        // Meiryo
+        // Mincho family - Mixed (半角MS + 全角明朝)
+        FONT_MAP.put("MS 明朝", "Noto Sans CJK JP");
+        FONT_MAP.put("MS P明朝", "Noto Sans CJK JP");
+        
+        // Meiryo - English
         FONT_MAP.put("Meiryo", "Noto Sans CJK JP");
         FONT_MAP.put("Meiryo UI", "Noto Sans CJK JP");
+        
+        // Meiryo - Japanese
         FONT_MAP.put("メイリオ", "Noto Sans CJK JP");
         
-        // Yu Gothic/Mincho
+        // Yu Gothic/Mincho - English
         FONT_MAP.put("Yu Gothic", "Noto Sans CJK JP");
         FONT_MAP.put("Yu Gothic UI", "Noto Sans CJK JP");
         FONT_MAP.put("Yu Mincho", "Noto Sans CJK JP");
+        
+        // Yu Gothic/Mincho - Japanese
         FONT_MAP.put("游ゴシック", "Noto Sans CJK JP");
+        FONT_MAP.put("游ゴシック体", "Noto Sans CJK JP");
         FONT_MAP.put("游明朝", "Noto Sans CJK JP");
+        FONT_MAP.put("游明朝体", "Noto Sans CJK JP");
         
         // HG fonts
         FONT_MAP.put("HGGothicB", "Noto Sans CJK JP");
         FONT_MAP.put("HGPGothicB", "Noto Sans CJK JP");
         FONT_MAP.put("HGSGothicB", "Noto Sans CJK JP");
         FONT_MAP.put("HGMinchoB", "Noto Sans CJK JP");
+        FONT_MAP.put("HGPMinchoB", "Noto Sans CJK JP");
+        FONT_MAP.put("HGSMinchoB", "Noto Sans CJK JP");
+        FONT_MAP.put("HG丸ｺﾞｼｯｸM-PRO", "Noto Sans CJK JP");
+        FONT_MAP.put("HGP創英角ｺﾞｼｯｸUB", "Noto Sans CJK JP");
+        FONT_MAP.put("HGS創英角ｺﾞｼｯｸUB", "Noto Sans CJK JP");
+        FONT_MAP.put("HG創英角ｺﾞｼｯｸUB", "Noto Sans CJK JP");
         
         // Chinese
         FONT_MAP.put("SimSun", "Noto Sans CJK JP");
         FONT_MAP.put("宋体", "Noto Sans CJK JP");
+        FONT_MAP.put("SimHei", "Noto Sans CJK JP");
+        FONT_MAP.put("黑体", "Noto Sans CJK JP");
         
         // Western fonts
         FONT_MAP.put("Arial", "DejaVu Sans");
         FONT_MAP.put("Times New Roman", "DejaVu Serif");
         FONT_MAP.put("Calibri", "DejaVu Sans");
         FONT_MAP.put("Cambria", "DejaVu Serif");
+        FONT_MAP.put("Century", "DejaVu Serif");
+        FONT_MAP.put("Verdana", "DejaVu Sans");
+        FONT_MAP.put("Tahoma", "DejaVu Sans");
     }
 
     /**
@@ -204,6 +234,7 @@ public class FontReplacer {
      */
     private static int replaceSimpleShapeFonts(XSSFSimpleShape shape, ReplacementStats stats) {
         int replacedCount = 0;
+        String shapeName = shape.getShapeName();
         
         try {
             // Use POI's TextParagraph API
@@ -217,33 +248,44 @@ public class FontReplacer {
                     XSSFTextRun run = runs.get(rIdx);
                     String text = run.getText();
                     String fontFamily = run.getFontFamily();
+                    String textPreview = (text != null ? text.substring(0, Math.min(text.length(), 20)) : "");
                     
-                    System.out.println("            P" + pIdx + "R" + rIdx + 
-                        ": font=\"" + fontFamily + "\" text=\"" + 
-                        (text != null ? text.substring(0, Math.min(text.length(), 20)) : "") + "\"");
+                    // Build single log line
+                    StringBuilder logLine = new StringBuilder();
+                    logLine.append("SHAPE[").append(shapeName).append("] ");
+                    logLine.append("P").append(pIdx).append("R").append(rIdx).append(": ");
+                    logLine.append("font=\"").append(fontFamily).append("\" ");
+                    logLine.append("text=\"").append(textPreview).append("\" ");
                     
                     if (fontFamily != null) {
                         String replacement = getReplacementFont(fontFamily);
                         if (replacement != null) {
-                            run.setFontFamily(replacement, (byte)0, (byte)0, false);
-                            stats.shapeTextsReplaced++;
-                            replacedCount++;
-                            System.out.println("              → Changed to: " + replacement);
+                            try {
+                                run.setFontFamily(replacement, (byte)0, (byte)0, false);
+                                stats.shapeTextsReplaced++;
+                                replacedCount++;
+                                logLine.append("=> OK: ").append(replacement);
+                            } catch (Exception setEx) {
+                                logLine.append("=> FAILED: ").append(setEx.getClass().getSimpleName());
+                                logLine.append(": ").append(setEx.getMessage());
+                            }
                         } else {
-                            System.out.println("              → No mapping for this font");
+                            logLine.append("=> SKIP: no mapping");
                         }
                     } else {
-                        System.out.println("              → Font is null (using default?)");
+                        logLine.append("=> SKIP: font is null");
                     }
+                    
+                    System.out.println(logLine.toString());
                 }
             }
         } catch (Exception e) {
-            System.out.println("            High-level API failed: " + e.getMessage());
+            System.out.println("SHAPE[" + shapeName + "] ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             // Try low-level approach as fallback
             try {
                 replacedCount = replaceLowLevelShapeFonts(shape, stats);
             } catch (Exception ex) {
-                System.out.println("            Low-level API also failed: " + ex.getMessage());
+                System.out.println("SHAPE[" + shapeName + "] LOW-LEVEL ERROR: " + ex.getClass().getSimpleName() + ": " + ex.getMessage());
             }
         }
         
