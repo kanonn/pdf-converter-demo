@@ -229,145 +229,121 @@ public class FontReplacer {
     }
 
     /**
-     * Replace fonts in a simple shape using POI's high-level API.
-     * Returns the number of fonts replaced.
+     * Replace fonts in a simple shape.
+     * Uses low-level XML manipulation since POI's high-level API doesn't persist changes.
      */
     private static int replaceSimpleShapeFonts(XSSFSimpleShape shape, ReplacementStats stats) {
-        int replacedCount = 0;
         String shapeName = shape.getShapeName();
-        
-        try {
-            // Use POI's TextParagraph API
-            List<XSSFTextParagraph> paragraphs = shape.getTextParagraphs();
-            
-            for (int pIdx = 0; pIdx < paragraphs.size(); pIdx++) {
-                XSSFTextParagraph paragraph = paragraphs.get(pIdx);
-                List<XSSFTextRun> runs = paragraph.getTextRuns();
-                
-                for (int rIdx = 0; rIdx < runs.size(); rIdx++) {
-                    XSSFTextRun run = runs.get(rIdx);
-                    String text = run.getText();
-                    String fontFamily = run.getFontFamily();
-                    String textPreview = (text != null ? text.substring(0, Math.min(text.length(), 20)) : "");
-                    
-                    // Build single log line
-                    StringBuilder logLine = new StringBuilder();
-                    logLine.append("SHAPE[").append(shapeName).append("] ");
-                    logLine.append("P").append(pIdx).append("R").append(rIdx).append(": ");
-                    logLine.append("font=\"").append(fontFamily).append("\" ");
-                    logLine.append("text=\"").append(textPreview).append("\" ");
-                    
-                    if (fontFamily != null) {
-                        String replacement = getReplacementFont(fontFamily);
-                        if (replacement != null) {
-                            try {
-                                run.setFontFamily(replacement, (byte)0, (byte)0, false);
-                                
-                                // Verify the change
-                                String afterFont = run.getFontFamily();
-                                if (replacement.equals(afterFont)) {
-                                    stats.shapeTextsReplaced++;
-                                    replacedCount++;
-                                    logLine.append("=> OK: ").append(replacement);
-                                } else {
-                                    logLine.append("=> SET BUT NOT SAVED: set=").append(replacement);
-                                    logLine.append(" actual=").append(afterFont);
-                                }
-                            } catch (Exception setEx) {
-                                logLine.append("=> FAILED: ").append(setEx.getClass().getSimpleName());
-                                logLine.append(": ").append(setEx.getMessage());
-                            }
-                        } else {
-                            logLine.append("=> SKIP: no mapping");
-                        }
-                    } else {
-                        logLine.append("=> SKIP: font is null");
-                    }
-                    
-                    System.out.println(logLine.toString());
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("SHAPE[" + shapeName + "] ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            // Try low-level approach as fallback
-            try {
-                replacedCount = replaceLowLevelShapeFonts(shape, stats);
-            } catch (Exception ex) {
-                System.out.println("SHAPE[" + shapeName + "] LOW-LEVEL ERROR: " + ex.getClass().getSimpleName() + ": " + ex.getMessage());
-            }
-        }
-        
-        return replacedCount;
-    }
-
-    /**
-     * Low-level font replacement using XML directly.
-     * Returns the number of fonts replaced.
-     */
-    private static int replaceLowLevelShapeFonts(XSSFSimpleShape shape, ReplacementStats stats) {
         int replacedCount = 0;
         
         try {
             CTShape ctShape = shape.getCTShape();
-            if (ctShape == null) return 0;
-            
-            // Access txBody via XML
-            org.apache.xmlbeans.XmlObject[] txBodyArr = ctShape.selectPath(
-                "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:txBody");
-            
-            if (txBodyArr == null || txBodyArr.length == 0) {
-                System.out.println("            Low-level: No txBody found");
+            if (ctShape == null) {
+                System.out.println("SHAPE[" + shapeName + "] => SKIP: no CTShape");
                 return 0;
             }
             
-            for (org.apache.xmlbeans.XmlObject txBodyObj : txBodyArr) {
-                // Find all font references
-                org.apache.xmlbeans.XmlObject[] latinFonts = txBodyObj.selectPath(
-                    "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:latin");
-                org.apache.xmlbeans.XmlObject[] eaFonts = txBodyObj.selectPath(
-                    "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:ea");
-                
-                System.out.println("            Low-level: Found " + 
-                    (latinFonts != null ? latinFonts.length : 0) + " latin, " +
-                    (eaFonts != null ? eaFonts.length : 0) + " ea fonts");
-                
-                replacedCount += replaceFontsInXmlObjects(latinFonts, stats);
-                replacedCount += replaceFontsInXmlObjects(eaFonts, stats);
+            // Get text body directly from XML
+            if (!ctShape.isSetTxBody()) {
+                System.out.println("SHAPE[" + shapeName + "] => SKIP: no txBody");
+                return 0;
             }
+            
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextBody txBody = ctShape.getTxBody();
+            if (txBody == null) {
+                System.out.println("SHAPE[" + shapeName + "] => SKIP: txBody is null");
+                return 0;
+            }
+            
+            // Iterate through paragraphs
+            for (org.openxmlformats.schemas.drawingml.x2006.main.CTTextParagraph para : txBody.getPList()) {
+                // Process runs
+                for (org.openxmlformats.schemas.drawingml.x2006.main.CTRegularTextRun run : para.getRList()) {
+                    String text = run.getT();
+                    
+                    if (run.isSetRPr()) {
+                        org.openxmlformats.schemas.drawingml.x2006.main.CTTextCharacterProperties rPr = run.getRPr();
+                        replacedCount += replaceCharacterFonts(shapeName, text, rPr, stats);
+                    }
+                }
+                
+                // Process default run properties
+                if (para.isSetPPr() && para.getPPr().isSetDefRPr()) {
+                    org.openxmlformats.schemas.drawingml.x2006.main.CTTextCharacterProperties defRPr = para.getPPr().getDefRPr();
+                    replacedCount += replaceCharacterFonts(shapeName, "(default)", defRPr, stats);
+                }
+            }
+            
+            // Process body default properties
+            if (txBody.isSetLstStyle()) {
+                org.openxmlformats.schemas.drawingml.x2006.main.CTTextListStyle lstStyle = txBody.getLstStyle();
+                if (lstStyle.isSetDefPPr() && lstStyle.getDefPPr().isSetDefRPr()) {
+                    replacedCount += replaceCharacterFonts(shapeName, "(listStyle)", lstStyle.getDefPPr().getDefRPr(), stats);
+                }
+            }
+            
+            if (replacedCount > 0) {
+                System.out.println("SHAPE[" + shapeName + "] => Total replaced: " + replacedCount);
+            } else {
+                System.out.println("SHAPE[" + shapeName + "] => No fonts replaced");
+            }
+            
         } catch (Exception e) {
-            System.out.println("            Low-level error: " + e.getMessage());
+            System.out.println("SHAPE[" + shapeName + "] ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
         
         return replacedCount;
     }
-
+    
     /**
-     * Replace fonts in XML objects.
-     * Returns the number of fonts replaced.
+     * Replace fonts in character properties (low-level XML).
      */
-    private static int replaceFontsInXmlObjects(org.apache.xmlbeans.XmlObject[] fonts, ReplacementStats stats) {
-        int replacedCount = 0;
-        if (fonts == null) return 0;
+    private static int replaceCharacterFonts(String shapeName, String text, 
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextCharacterProperties rPr,
+            ReplacementStats stats) {
+        int count = 0;
+        String textPreview = text != null ? text.substring(0, Math.min(text.length(), 15)) : "";
         
-        for (org.apache.xmlbeans.XmlObject fontObj : fonts) {
-            try {
-                org.apache.xmlbeans.XmlCursor cursor = fontObj.newCursor();
-                String typeface = cursor.getAttributeText(new javax.xml.namespace.QName("typeface"));
-                if (typeface != null) {
-                    String replacement = getReplacementFont(typeface);
-                    if (replacement != null) {
-                        cursor.setAttributeText(new javax.xml.namespace.QName("typeface"), replacement);
-                        stats.shapeTextsReplaced++;
-                        replacedCount++;
-                    }
-                }
-                cursor.dispose();
-            } catch (Exception e) {
-                // Skip
+        // Latin font (a:latin)
+        if (rPr.isSetLatin()) {
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont latin = rPr.getLatin();
+            String fontName = latin.getTypeface();
+            String replacement = getReplacementFont(fontName);
+            if (replacement != null) {
+                latin.setTypeface(replacement);
+                count++;
+                stats.shapeTextsReplaced++;
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" latin=\"" + fontName + "\" => " + replacement);
             }
         }
         
-        return replacedCount;
+        // East Asian font (a:ea)
+        if (rPr.isSetEa()) {
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont ea = rPr.getEa();
+            String fontName = ea.getTypeface();
+            String replacement = getReplacementFont(fontName);
+            if (replacement != null) {
+                ea.setTypeface(replacement);
+                count++;
+                stats.shapeTextsReplaced++;
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" ea=\"" + fontName + "\" => " + replacement);
+            }
+        }
+        
+        // Complex script font (a:cs)
+        if (rPr.isSetCs()) {
+            org.openxmlformats.schemas.drawingml.x2006.main.CTTextFont cs = rPr.getCs();
+            String fontName = cs.getTypeface();
+            String replacement = getReplacementFont(fontName);
+            if (replacement != null) {
+                cs.setTypeface(replacement);
+                count++;
+                stats.shapeTextsReplaced++;
+                System.out.println("SHAPE[" + shapeName + "] text=\"" + textPreview + "\" cs=\"" + fontName + "\" => " + replacement);
+            }
+        }
+        
+        return count;
     }
 
     /**
