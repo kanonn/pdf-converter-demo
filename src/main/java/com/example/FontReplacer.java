@@ -2,8 +2,7 @@ package com.example;
 
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.*;
-import org.openxmlformats.schemas.drawingml.x2006.main.*;
-import org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.*;
+import org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTShape;
 
 import java.io.*;
 import java.nio.file.*;
@@ -154,13 +153,11 @@ public class FontReplacer {
                 
                 try {
                     if (shape instanceof XSSFSimpleShape) {
-                        replaceShapeFonts((XSSFSimpleShape) shape, stats);
+                        replaceSimpleShapeFonts((XSSFSimpleShape) shape, stats);
                     } else if (shape instanceof XSSFShapeGroup) {
-                        // Handle grouped shapes
                         replaceGroupFonts((XSSFShapeGroup) shape, stats);
                     }
                 } catch (Exception e) {
-                    // Skip problematic shapes
                     System.out.println("      Warning: Could not process shape: " + e.getMessage());
                 }
             }
@@ -168,43 +165,83 @@ public class FontReplacer {
     }
 
     /**
-     * Replace fonts in a simple shape.
+     * Replace fonts in a simple shape using POI's high-level API.
      */
-    private static void replaceShapeFonts(XSSFSimpleShape shape, ReplacementStats stats) {
+    private static void replaceSimpleShapeFonts(XSSFSimpleShape shape, ReplacementStats stats) {
         try {
-            CTShape ctShape = shape.getCTShape();
-            if (ctShape == null || !ctShape.isSetTxBody()) return;
-            
-            CTTextBody txBody = ctShape.getTxBody();
-            if (txBody == null) return;
-            
-            for (CTTextParagraph paragraph : txBody.getPList()) {
-                for (CTRegularTextRun run : paragraph.getRList()) {
-                    if (run.isSetRPr()) {
-                        CTTextCharacterProperties props = run.getRPr();
-                        replaceFontInTextProps(props, stats);
+            // Use POI's TextParagraph API instead of low-level CT classes
+            for (XSSFTextParagraph paragraph : shape.getTextParagraphs()) {
+                for (XSSFTextRun run : paragraph.getTextRuns()) {
+                    String fontFamily = run.getFontFamily();
+                    if (fontFamily != null) {
+                        String replacement = getReplacementFont(fontFamily);
+                        if (replacement != null) {
+                            run.setFontFamily(replacement);
+                            stats.shapeTextsReplaced++;
+                        }
                     }
                 }
+            }
+        } catch (Exception e) {
+            // Try low-level approach as fallback
+            try {
+                replaceLowLevelShapeFonts(shape, stats);
+            } catch (Exception ex) {
+                // Skip
+            }
+        }
+    }
+
+    /**
+     * Low-level font replacement using XML directly.
+     */
+    private static void replaceLowLevelShapeFonts(XSSFSimpleShape shape, ReplacementStats stats) {
+        try {
+            CTShape ctShape = shape.getCTShape();
+            if (ctShape == null) return;
+            
+            // Access txBody via XML
+            org.apache.xmlbeans.XmlObject[] txBodyArr = ctShape.selectPath(
+                "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:txBody");
+            
+            if (txBodyArr == null || txBodyArr.length == 0) return;
+            
+            for (org.apache.xmlbeans.XmlObject txBodyObj : txBodyArr) {
+                // Find all font references
+                org.apache.xmlbeans.XmlObject[] latinFonts = txBodyObj.selectPath(
+                    "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:latin");
+                org.apache.xmlbeans.XmlObject[] eaFonts = txBodyObj.selectPath(
+                    "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:ea");
                 
-                // Default paragraph run properties
-                if (paragraph.isSetPPr() && paragraph.getPPr().isSetDefRPr()) {
-                    replaceFontInTextProps(paragraph.getPPr().getDefRPr(), stats);
-                }
+                replaceFontsInXmlObjects(latinFonts, stats);
+                replaceFontsInXmlObjects(eaFonts, stats);
             }
-            
-            // Body default properties
-            if (txBody.isSetBodyPr()) {
-                // Body properties don't contain font info directly
-            }
-            
-            // List style
-            if (txBody.isSetLstStyle()) {
-                CTTextListStyle lstStyle = txBody.getLstStyle();
-                replaceListStyleFonts(lstStyle, stats);
-            }
-            
         } catch (Exception e) {
             // Skip
+        }
+    }
+
+    /**
+     * Replace fonts in XML objects.
+     */
+    private static void replaceFontsInXmlObjects(org.apache.xmlbeans.XmlObject[] fonts, ReplacementStats stats) {
+        if (fonts == null) return;
+        
+        for (org.apache.xmlbeans.XmlObject fontObj : fonts) {
+            try {
+                org.apache.xmlbeans.XmlCursor cursor = fontObj.newCursor();
+                String typeface = cursor.getAttributeText(new javax.xml.namespace.QName("typeface"));
+                if (typeface != null) {
+                    String replacement = getReplacementFont(typeface);
+                    if (replacement != null) {
+                        cursor.setAttributeText(new javax.xml.namespace.QName("typeface"), replacement);
+                        stats.shapeTextsReplaced++;
+                    }
+                }
+                cursor.dispose();
+            } catch (Exception e) {
+                // Skip
+            }
         }
     }
 
@@ -212,60 +249,15 @@ public class FontReplacer {
      * Replace fonts in grouped shapes.
      */
     private static void replaceGroupFonts(XSSFShapeGroup group, ReplacementStats stats) {
-        // POI doesn't expose group children easily, skip for now
-    }
-
-    /**
-     * Replace font in text character properties.
-     */
-    private static void replaceFontInTextProps(CTTextCharacterProperties props, ReplacementStats stats) {
-        if (props == null) return;
-        
+        // Iterate through shapes in the group
         try {
-            // Latin font
-            if (props.isSetLatin()) {
-                CTTextFont latin = props.getLatin();
-                String fontName = latin.getTypeface();
-                String replacement = getReplacementFont(fontName);
-                if (replacement != null) {
-                    latin.setTypeface(replacement);
-                    stats.shapeTextsReplaced++;
-                }
-            }
-            
-            // East Asian font
-            if (props.isSetEa()) {
-                CTTextFont ea = props.getEa();
-                String fontName = ea.getTypeface();
-                String replacement = getReplacementFont(fontName);
-                if (replacement != null) {
-                    ea.setTypeface(replacement);
-                    stats.shapeTextsReplaced++;
-                }
-            }
-            
-            // Complex script font
-            if (props.isSetCs()) {
-                CTTextFont cs = props.getCs();
-                String fontName = cs.getTypeface();
-                String replacement = getReplacementFont(fontName);
-                if (replacement != null) {
-                    cs.setTypeface(replacement);
-                    stats.shapeTextsReplaced++;
+            for (XSSFShape shape : group) {
+                if (shape instanceof XSSFSimpleShape) {
+                    replaceSimpleShapeFonts((XSSFSimpleShape) shape, stats);
                 }
             }
         } catch (Exception e) {
             // Skip
-        }
-    }
-
-    /**
-     * Replace fonts in list style.
-     */
-    private static void replaceListStyleFonts(CTTextListStyle lstStyle, ReplacementStats stats) {
-        // Handle different levels
-        if (lstStyle.isSetDefPPr() && lstStyle.getDefPPr().isSetDefRPr()) {
-            replaceFontInTextProps(lstStyle.getDefPPr().getDefRPr(), stats);
         }
     }
 
