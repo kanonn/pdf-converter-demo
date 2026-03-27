@@ -169,6 +169,7 @@ public class FontReplacer {
     /**
      * Fix a single shape by removing problematic attributes and extensions.
      * LibreOffice cannot render shapes with textlink/macro/extLst properly.
+     * Also fixes a:ln (line) settings that cause rendering issues.
      * Returns true if this shape was fixed and should NOT have font replacement.
      */
     private static boolean fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
@@ -182,12 +183,14 @@ public class FontReplacer {
             boolean hasTextlink = xmlBefore.contains("textlink=");
             boolean hasMacro = xmlBefore.contains("macro=");
             boolean hasExtLst = xmlBefore.contains("<a:extLst") || xmlBefore.contains("a16:creationId");
+            boolean hasLineFill = xmlBefore.contains("<a:ln") && xmlBefore.contains("<a:solidFill");
             
-            if (!hasTextlink && !hasMacro && !hasExtLst) {
+            if (!hasTextlink && !hasMacro && !hasExtLst && !hasLineFill) {
                 return false;
             }
             
-            System.out.println("      SHAPE[" + shapeName + "] has textlink=" + hasTextlink + ", macro=" + hasMacro + ", extLst=" + hasExtLst);
+            System.out.println("      SHAPE[" + shapeName + "] has textlink=" + hasTextlink + 
+                ", macro=" + hasMacro + ", extLst=" + hasExtLst + ", lineFill=" + hasLineFill);
             
             // Try to remove attributes using XmlCursor on the shape itself
             org.apache.xmlbeans.XmlCursor cursor = ctShape.newCursor();
@@ -227,6 +230,46 @@ public class FontReplacer {
                     }
                 } catch (Exception e) {
                     System.out.println("        => Failed to remove extLst: " + e.getMessage());
+                }
+            }
+            
+            // Fix a:ln - replace solidFill with noFill
+            if (hasLineFill) {
+                try {
+                    // Find a:ln elements and replace their content
+                    org.apache.xmlbeans.XmlObject[] lnArr = ctShape.selectPath(
+                        "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:ln");
+                    
+                    if (lnArr != null && lnArr.length > 0) {
+                        for (org.apache.xmlbeans.XmlObject lnObj : lnArr) {
+                            // Remove all children of a:ln
+                            org.apache.xmlbeans.XmlCursor c = lnObj.newCursor();
+                            
+                            // Move to first child and remove all children
+                            if (c.toFirstChild()) {
+                                do {
+                                    c.removeXml();
+                                } while (c.toNextSibling());
+                            }
+                            
+                            // Now add noFill as the only child
+                            // Move back to the ln element
+                            c.toParent();
+                            c.toEndToken();
+                            c.insertElementWithText(new javax.xml.namespace.QName(
+                                "http://schemas.openxmlformats.org/drawingml/2006/main", "noFill", "a"), "");
+                            
+                            // Remove the w attribute from ln
+                            c.toParent();
+                            c.removeAttribute(new javax.xml.namespace.QName("w"));
+                            
+                            c.dispose();
+                            System.out.println("        => Fixed a:ln (changed solidFill to noFill)");
+                            stats.textLinksFixed++;
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println("        => Failed to fix a:ln: " + e.getMessage());
                 }
             }
             
