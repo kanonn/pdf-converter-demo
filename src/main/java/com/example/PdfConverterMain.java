@@ -5,14 +5,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
  * PDF Converter Main Class
  *
- * Downloads files from S3, replaces Windows fonts with Linux fonts,
- * converts Excel/Word/TIFF to PDF, merges all PDFs into one,
+ * Downloads files from S3, converts Excel/Word/TIFF to PDF,
+ * collects existing PDF files, merges all PDFs into one,
  * and uploads the result back to S3.
+ * 
+ * Excel PDF is placed first, followed by other PDFs.
  */
 public class PdfConverterMain {
 
@@ -25,9 +28,6 @@ public class PdfConverterMain {
     private static String s3InputPrefix = "input/";
     private static String s3OutputPrefix = "output/";
     private static String targetExcelSheet = "Sheet1";
-    
-    // Flag to enable font replacement
-    private static boolean enableFontReplacement = true;
 
     public static void main(String[] args) {
         System.out.println("========================================");
@@ -44,47 +44,68 @@ public class PdfConverterMain {
             s3Client = new S3ClientUtil(s3BucketName, s3Region);
 
             // Step 1: Download files from S3
-            System.out.println("\n[1/6] Downloading files from S3...");
+            System.out.println("\n[1/5] Downloading files from S3...");
             downloadFilesFromS3(s3Client);
 
+            // Collect PDFs: Excel PDF first, then others
             List<String> pdfFiles = new ArrayList<>();
+            List<String> inputPdfFiles = new ArrayList<>();
 
-            // Step 2: Convert Excel to PDF
-            System.out.println("\n[2/6] Converting Excel to PDF...");
-            String excelPdf = convertExcel(s3Client);
-            if (excelPdf != null) {
-                pdfFiles.add(excelPdf);
+            // Step 2: Collect existing PDF files from input
+            System.out.println("\n[2/5] Collecting existing PDF files from input...");
+            inputPdfFiles = collectInputPdfs();
+            System.out.println("  Found " + inputPdfFiles.size() + " PDF file(s) in input");
+
+            // Step 3: Convert Excel to PDF (will be placed first)
+            System.out.println("\n[3/5] Converting Excel to PDF...");
+            String excelPdf = convertExcel();
+            if (excelPdf != null && new File(excelPdf).exists()) {
+                pdfFiles.add(excelPdf);  // Excel PDF first!
                 System.out.println("  OK: " + excelPdf);
             }
 
-            // Step 3: Convert Word to PDF
-            System.out.println("\n[3/6] Converting Word to PDF...");
+            // Step 4: Convert Word to PDF
+            System.out.println("\n[4/5] Converting Word/TIFF to PDF...");
             String wordPdf = convertWord();
-            if (wordPdf != null) {
+            if (wordPdf != null && new File(wordPdf).exists()) {
                 pdfFiles.add(wordPdf);
                 System.out.println("  OK: " + wordPdf);
             }
 
-            // Step 4: Convert TIFF to PDF
-            System.out.println("\n[4/6] Converting TIFF to PDF...");
+            // Convert TIFF to PDF
             List<String> tiffPdfs = convertTiffs();
-            pdfFiles.addAll(tiffPdfs);
             for (String pdf : tiffPdfs) {
-                System.out.println("  OK: " + pdf);
+                if (new File(pdf).exists()) {
+                    pdfFiles.add(pdf);
+                    System.out.println("  OK: " + pdf);
+                }
             }
 
+            // Add input PDFs (after Excel PDF)
+            pdfFiles.addAll(inputPdfFiles);
+
             // Step 5: Merge all PDFs
-            System.out.println("\n[5/6] Merging PDFs...");
+            System.out.println("\n[5/5] Merging all PDFs...");
+            System.out.println("  Total PDFs to merge: " + pdfFiles.size());
+            for (int i = 0; i < pdfFiles.size(); i++) {
+                System.out.println("    [" + (i + 1) + "] " + pdfFiles.get(i));
+            }
+
             if (pdfFiles.isEmpty()) {
                 System.out.println("  No PDF files to merge");
             } else {
                 String mergedPdf = OUTPUT_DIR + "/merged_document.pdf";
                 PdfMerger.mergePdfs(pdfFiles, mergedPdf);
-                System.out.println("  OK: " + mergedPdf);
+                System.out.println("  Merged PDF created: " + mergedPdf);
 
-                // Step 6: Upload to S3
+                // Upload to S3
                 System.out.println("\n[6/6] Uploading results to S3...");
                 uploadResultToS3(s3Client, mergedPdf);
+                
+                // Also upload individual Excel PDF if exists
+                if (excelPdf != null && new File(excelPdf).exists()) {
+                    uploadResultToS3(s3Client, excelPdf);
+                }
             }
 
             System.out.println("\n========================================");
@@ -121,9 +142,6 @@ public class PdfConverterMain {
                 case "--sheet":
                     if (i + 1 < args.length) targetExcelSheet = args[++i];
                     break;
-                case "--no-font-replacement":
-                    enableFontReplacement = false;
-                    break;
                 case "--help":
                     printUsage();
                     System.exit(0);
@@ -147,28 +165,23 @@ public class PdfConverterMain {
         String envSheet = System.getenv("TARGET_EXCEL_SHEET");
         if (envSheet != null && !envSheet.isEmpty()) targetExcelSheet = envSheet;
 
-        String envFontReplace = System.getenv("ENABLE_FONT_REPLACEMENT");
-        if ("false".equalsIgnoreCase(envFontReplace)) enableFontReplacement = false;
-
         System.out.println("Configuration:");
         System.out.println("  Bucket: " + s3BucketName);
         System.out.println("  Region: " + s3Region);
         System.out.println("  Input prefix: " + s3InputPrefix);
         System.out.println("  Output prefix: " + s3OutputPrefix);
         System.out.println("  Target sheet: " + targetExcelSheet);
-        System.out.println("  Font replacement: " + (enableFontReplacement ? "ENABLED" : "DISABLED"));
     }
 
     private static void printUsage() {
         System.out.println("Usage: java -jar pdf-converter-s3.jar [options]");
         System.out.println();
         System.out.println("Options:");
-        System.out.println("  --bucket <name>          S3 bucket name");
+        System.out.println("  --bucket <n>          S3 bucket name");
         System.out.println("  --region <region>        AWS region (default: ap-northeast-1)");
         System.out.println("  --input-prefix <path>    S3 input prefix (default: input/)");
         System.out.println("  --output-prefix <path>   S3 output prefix (default: output/)");
-        System.out.println("  --sheet <name>           Excel sheet name to convert (default: Sheet1)");
-        System.out.println("  --no-font-replacement    Disable font replacement");
+        System.out.println("  --sheet <n>           Excel sheet name to convert (default: Sheet1)");
         System.out.println("  --help                   Show this help message");
     }
 
@@ -190,8 +203,10 @@ public class PdfConverterMain {
 
         for (String s3Key : s3Keys) {
             String fileName = s3Key.substring(s3Key.lastIndexOf('/') + 1);
+            if (fileName.isEmpty()) continue; // Skip directories
             Path localPath = Paths.get(INPUT_DIR, fileName);
             s3Client.downloadFile(s3Key, localPath);
+            System.out.println("    Downloaded: " + fileName);
         }
     }
 
@@ -199,13 +214,37 @@ public class PdfConverterMain {
         Path localPath = Paths.get(localPdfPath);
         String s3Key = s3OutputPrefix + localPath.getFileName().toString();
         s3Client.uploadFile(localPath, s3Key, "application/pdf");
+        System.out.println("  Uploaded: " + s3Key);
     }
 
     /**
-     * Convert Excel file to PDF.
-     * If font replacement is enabled, replaces Windows fonts with Linux fonts first.
+     * Collect existing PDF files from input directory.
+     * Returns sorted list of PDF file paths.
      */
-    private static String convertExcel(S3ClientUtil s3Client) throws Exception {
+    private static List<String> collectInputPdfs() {
+        List<String> pdfFiles = new ArrayList<>();
+        File inputDir = new File(INPUT_DIR);
+
+        File[] pdfs = inputDir.listFiles((dir, name) -> 
+                name.toLowerCase().endsWith(".pdf"));
+
+        if (pdfs != null && pdfs.length > 0) {
+            for (File pdf : pdfs) {
+                pdfFiles.add(pdf.getPath());
+                System.out.println("    Found: " + pdf.getName());
+            }
+            // Sort by filename for consistent ordering
+            Collections.sort(pdfFiles);
+        }
+
+        return pdfFiles;
+    }
+
+    /**
+     * Convert Excel file to PDF using LibreOffice.
+     * Simple conversion without font replacement.
+     */
+    private static String convertExcel() throws Exception {
         File inputDir = new File(INPUT_DIR);
         File[] excelFiles = inputDir.listFiles((dir, name) ->
                 name.toLowerCase().endsWith(".xlsx") || name.toLowerCase().endsWith(".xls"));
@@ -216,44 +255,27 @@ public class PdfConverterMain {
         }
 
         File excelFile = excelFiles[0];
+        System.out.println("  Input Excel: " + excelFile.getName());
+        
         String tempExcelForSheet = TEMP_DIR + "/excel_single_sheet.xlsx";
-        String tempExcelFontReplaced = TEMP_DIR + "/excel_font_replaced.xlsx";
         String outputPdf = OUTPUT_DIR + "/excel_output.pdf";
 
         // Step 1: Extract specific sheet
         System.out.println("  Extracting sheet: " + targetExcelSheet);
         ExcelSheetExtractor.extractSheet(excelFile.getPath(), targetExcelSheet, tempExcelForSheet);
 
-        // Step 2: Font replacement (if enabled)
-        String excelToConvert;
-        if (enableFontReplacement) {
-            System.out.println("  Replacing fonts (Windows -> Linux)...");
-            FontReplacer.ReplacementStats stats = FontReplacer.replaceAllFonts(tempExcelForSheet, tempExcelFontReplaced);
-            excelToConvert = tempExcelFontReplaced;
-            
-            // Upload font-replaced Excel to S3 for comparison
-            System.out.println("  Uploading font-replaced Excel to S3...");
-            String s3Key = s3OutputPrefix + "excel_font_replaced.xlsx";
-            s3Client.uploadFile(Paths.get(tempExcelFontReplaced), s3Key, 
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        } else {
-            System.out.println("  Font replacement: SKIPPED");
-            excelToConvert = tempExcelForSheet;
-        }
-
-        // Step 3: Convert to PDF using LibreOffice
-        System.out.println("  Converting to PDF...");
-        System.out.println("    Input file: " + excelToConvert);
-        File inputFile = new File(excelToConvert);
-        System.out.println("    File exists: " + inputFile.exists());
-        System.out.println("    File size: " + inputFile.length() + " bytes");
-        LibreOfficeConverter.convertToPdf(excelToConvert, OUTPUT_DIR);
+        // Step 2: Convert to PDF using LibreOffice (simple conversion)
+        System.out.println("  Converting to PDF with LibreOffice...");
+        LibreOfficeConverter.convertToPdf(tempExcelForSheet, OUTPUT_DIR);
 
         // Rename output file
-        String baseName = new File(excelToConvert).getName().replaceAll("\\.[^.]+$", "");
+        String baseName = new File(tempExcelForSheet).getName().replaceAll("\\.[^.]+$", "");
         File generatedPdf = new File(OUTPUT_DIR + "/" + baseName + ".pdf");
         if (generatedPdf.exists()) {
-            generatedPdf.renameTo(new File(outputPdf));
+            File outputFile = new File(outputPdf);
+            if (outputFile.exists()) outputFile.delete();
+            generatedPdf.renameTo(outputFile);
+            System.out.println("  PDF size: " + (outputFile.length() / 1024) + " KB");
         }
 
         return outputPdf;
@@ -272,12 +294,15 @@ public class PdfConverterMain {
         File wordFile = wordFiles[0];
         String outputPdf = OUTPUT_DIR + "/word_output.pdf";
 
+        System.out.println("  Input Word: " + wordFile.getName());
         LibreOfficeConverter.convertToPdf(wordFile.getPath(), OUTPUT_DIR);
 
         String baseName = wordFile.getName().replaceAll("\\.[^.]+$", "");
         File generatedPdf = new File(OUTPUT_DIR + "/" + baseName + ".pdf");
         if (generatedPdf.exists()) {
-            generatedPdf.renameTo(new File(outputPdf));
+            File outputFile = new File(outputPdf);
+            if (outputFile.exists()) outputFile.delete();
+            generatedPdf.renameTo(outputFile);
         }
 
         return outputPdf;
@@ -298,6 +323,7 @@ public class PdfConverterMain {
         for (File tiffFile : tiffFiles) {
             String baseName = tiffFile.getName().replaceAll("\\.(tif|tiff)$", "");
             String outputPdf = OUTPUT_DIR + "/" + baseName + ".pdf";
+            System.out.println("  Input TIFF: " + tiffFile.getName());
             TiffToPdfConverter.convert(tiffFile.getPath(), outputPdf);
             pdfFiles.add(outputPdf);
         }
