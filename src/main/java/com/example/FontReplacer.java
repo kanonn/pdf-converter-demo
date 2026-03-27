@@ -107,14 +107,14 @@ public class FontReplacer {
         try (FileInputStream fis = new FileInputStream(inputPath);
              XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
             
-            // 1. Fix textlink shapes (convert dynamic text to static)
-            fixTextLinkShapes(workbook, stats);
+            // 1. Fix textlink/macro/extLst shapes (returns shapes to skip)
+            Set<String> fixedShapes = fixTextLinkShapes(workbook, stats);
             
             // 2. Replace cell fonts
             replaceCellFonts(workbook, stats);
             
-            // 3. Replace drawing/shape fonts
-            replaceDrawingFonts(workbook, stats);
+            // 3. Replace drawing/shape fonts (skip fixed shapes)
+            replaceDrawingFonts(workbook, stats, fixedShapes);
             
             // Save
             try (FileOutputStream fos = new FileOutputStream(outputPath)) {
@@ -135,9 +135,11 @@ public class FontReplacer {
     /**
      * Fix shapes with textlink attribute by converting them to static text.
      * LibreOffice cannot render dynamic linked text properly.
+     * Returns a set of shape names that were fixed and should skip font replacement.
      */
-    private static void fixTextLinkShapes(XSSFWorkbook workbook, ReplacementStats stats) {
-        System.out.println("    Fixing textlink shapes...");
+    private static Set<String> fixTextLinkShapes(XSSFWorkbook workbook, ReplacementStats stats) {
+        System.out.println("    Fixing textlink/macro/extLst shapes...");
+        Set<String> fixedShapes = new HashSet<>();
         
         for (Sheet sheet : workbook) {
             XSSFSheet xssfSheet = (XSSFSheet) sheet;
@@ -149,23 +151,30 @@ public class FontReplacer {
                 try {
                     if (shape instanceof XSSFSimpleShape) {
                         XSSFSimpleShape simpleShape = (XSSFSimpleShape) shape;
-                        fixTextLink(simpleShape, workbook, stats);
+                        boolean wasFixed = fixTextLink(simpleShape, workbook, stats);
+                        if (wasFixed) {
+                            fixedShapes.add(simpleShape.getShapeName());
+                        }
                     }
                 } catch (Exception e) {
                     System.out.println("      Warning: Could not fix textlink for shape: " + e.getMessage());
                 }
             }
         }
+        
+        System.out.println("    Fixed " + fixedShapes.size() + " shapes (will skip font replacement for these)");
+        return fixedShapes;
     }
     
     /**
      * Fix a single shape by removing problematic attributes and extensions.
      * LibreOffice cannot render shapes with textlink/macro/extLst properly.
+     * Returns true if this shape was fixed and should NOT have font replacement.
      */
-    private static void fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
+    private static boolean fixTextLink(XSSFSimpleShape shape, XSSFWorkbook workbook, ReplacementStats stats) {
         try {
             CTShape ctShape = shape.getCTShape();
-            if (ctShape == null) return;
+            if (ctShape == null) return false;
             
             String shapeName = shape.getShapeName();
             String xmlBefore = ctShape.xmlText();
@@ -175,7 +184,7 @@ public class FontReplacer {
             boolean hasExtLst = xmlBefore.contains("<a:extLst") || xmlBefore.contains("a16:creationId");
             
             if (!hasTextlink && !hasMacro && !hasExtLst) {
-                return;
+                return false;
             }
             
             System.out.println("      SHAPE[" + shapeName + "] has textlink=" + hasTextlink + ", macro=" + hasMacro + ", extLst=" + hasExtLst);
@@ -204,7 +213,6 @@ public class FontReplacer {
             // Remove extLst elements using XPath
             if (hasExtLst) {
                 try {
-                    // Find and remove all extLst elements
                     org.apache.xmlbeans.XmlObject[] extLstArr = ctShape.selectPath(
                         "declare namespace a='http://schemas.openxmlformats.org/drawingml/2006/main' .//a:extLst");
                     
@@ -243,40 +251,12 @@ public class FontReplacer {
                 }
             }
             
-            // Check if attributes are still present
-            String xmlAfter = ctShape.xmlText();
-            boolean stillHasProblems = xmlAfter.contains("textlink=") || 
-                                       xmlAfter.contains("macro=") || 
-                                       xmlAfter.contains("<a:extLst") ||
-                                       xmlAfter.contains("a16:creationId");
-            
-            if (stillHasProblems) {
-                System.out.println("        => Some attributes still present, trying clearText/setText");
-                
-                // Get existing text and re-set it
-                String existingText = null;
-                try {
-                    existingText = shape.getText();
-                } catch (Exception e) {
-                    // ignore
-                }
-                
-                if (existingText != null && !existingText.trim().isEmpty()) {
-                    System.out.println("        => Existing text: \"" + existingText.substring(0, Math.min(existingText.length(), 30)) + "\"");
-                    try {
-                        shape.clearText();
-                        shape.setText(existingText);
-                        System.out.println("        => Re-set text SUCCESS");
-                    } catch (Exception e) {
-                        System.out.println("        => Re-set text FAILED: " + e.getMessage());
-                    }
-                }
-            } else {
-                System.out.println("        => All problematic attributes removed successfully");
-            }
+            System.out.println("        => Fixed shape, will NOT replace fonts (let fontconfig handle)");
+            return true; // Signal that this shape was fixed and should skip font replacement
             
         } catch (Exception e) {
             System.out.println("      Warning: fixTextLink error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return false;
         }
     }
 
@@ -324,8 +304,9 @@ public class FontReplacer {
 
     /**
      * Replace fonts in drawings (shapes, text boxes, etc.).
+     * Skips shapes that were fixed for textlink/macro issues.
      */
-    private static void replaceDrawingFonts(XSSFWorkbook workbook, ReplacementStats stats) {
+    private static void replaceDrawingFonts(XSSFWorkbook workbook, ReplacementStats stats, Set<String> fixedShapes) {
         for (Sheet sheet : workbook) {
             XSSFSheet xssfSheet = (XSSFSheet) sheet;
             XSSFDrawing drawing = xssfSheet.getDrawingPatriarch();
@@ -345,6 +326,13 @@ public class FontReplacer {
                 try {
                     String shapeType = shape.getClass().getSimpleName();
                     String shapeName = shape.getShapeName();
+                    
+                    // Skip shapes that were fixed (let fontconfig handle fonts)
+                    if (fixedShapes.contains(shapeName)) {
+                        System.out.println("        [" + shapeIndex + "] " + shapeType + 
+                            " name=\"" + shapeName + "\" => SKIP (was fixed, using fontconfig)");
+                        continue;
+                    }
                     
                     if (shape instanceof XSSFSimpleShape) {
                         XSSFSimpleShape simpleShape = (XSSFSimpleShape) shape;
